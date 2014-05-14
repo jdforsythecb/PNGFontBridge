@@ -6,10 +6,23 @@ Imports System.Drawing.Imaging
 
 Public Class PNGFontBridge
 
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    '' PRIVATE VARIABLES '''''''''''''''''''''''''''''''''''''''
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    '' holds the folder number, or fnx filename (set by Folder() property)
     Private fnx As String = ""
 
+    '' base path for fnx files
     Private Const PNGPath As String = "g:\PNGFonts\"
 
+
+
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    '' PUBLIC PROPERTIES '''''''''''''''''''''''''''''''''''''''
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    '' publicly settable property for fnx
     Property Folder() As String
         Get
             Return fnx
@@ -19,115 +32,74 @@ Public Class PNGFontBridge
         End Set
     End Property
 
-    Public Function getFolderList(Optional ByVal filter As String = "") As List(Of String)
-        Dim files As New List(Of String)
 
-        If (filter = "") Then
-            filter = "*.fnx"
-        Else
-            filter = "*" & filter & "*.fnx"
-        End If
 
-        For Each fnx As String In Directory.EnumerateFiles(PNGPath, filter, SearchOption.TopDirectoryOnly).OrderBy(Function(x) Path.GetFileName(x))
-            files.Add(Path.GetFileNameWithoutExtension(fnx))
-        Next
 
-        Return files
-    End Function
-
-    Public Function getFnxPathFromFolderNumber(Optional ByVal folderNum As String = "") As String
-        Try
-            '' if no folder number is passed, try to use the Folder() property
-            If (folderNum = "") Then folderNum = fnx
-        Catch ex As Exception When folderNum = ""
-            Throw New ApplicationException("PNGFontBridge:getFnxPathFromFolderNumber - No folder number specified", ex)
-        End Try
-
-        Return PNGPath & folderNum & ".fnx"
-    End Function
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    '' PUBLIC METHODS ''''''''''''''''''''''''''''''''''''''''''
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
     '' returns a dictionary of key:id, value:dictionary[image:base64imagedata, fontCode:font code, fontTitle:font title]
     Public Function getCopyListFromFolderNumber(Optional ByVal folderNum As String = "", Optional suppressErrors As Boolean = False) As Dictionary(Of String, Dictionary(Of String, String))
-        Dim images As New Dictionary(Of String, Dictionary(Of String, String))
         Try
             '' if no folderNum is passed, try to use the Folder() property
             If (folderNum = "") Then folderNum = fnx
-            Dim xmlReader As XmlTextReader = New XmlTextReader(getFnxPathFromFolderNumber(folderNum))
 
-            '' we know there is a supplied folder number and that it exists, so perform the search through the font to get the copy
-            Dim image As String = ""
-            Dim id As String = ""
-            Dim fontCode As String = ""
-            Dim fontTitle As String = ""
+            Dim images As New Dictionary(Of String, Dictionary(Of String, String))
+            Dim b64image As String = "", id As String = "", fontCode As String = "", fontTitle As String = ""
 
-            Do While (xmlReader.Read())
-                '' we only want things returned that are elements of type "ROW" with attribute "image"
-                If ((xmlReader.NodeType = XmlNodeType.Element) And
-                    (xmlReader.Name.ToUpper = "ROW") And
-                    (xmlReader.HasAttributes)) Then
-                    '' we only want elements that have an image attribute
-                    xmlReader.MoveToAttribute("Image")
-                    '' if it has a value for the image attribute, get the image, id, code, and title values
-                    If (xmlReader.Value.Length > 0) Then
-                        image = xmlReader.Value
+            Using fs As New FileStream(getFnxPathFromFolderNumber(folderNum), FileMode.Open, FileAccess.Read)
+                Using reader As XmlReader = XmlReader.Create(fs)
+                    While reader.Read
 
-                        xmlReader.MoveToAttribute("Id")
-                        id = xmlReader.Value
+                        '' we only want elements of type row with attribute image
+                        If ((reader.NodeType = XmlNodeType.Element) AndAlso
+                            (reader.Name.ToUpper = "ROW") AndAlso
+                            (reader.GetAttribute("Image") <> Nothing)) Then
 
-                        xmlReader.MoveToAttribute("Code")
-                        fontCode = xmlReader.Value
+                            id = reader.GetAttribute("Id")
+                            b64image = reader.GetAttribute("Image")
+                            fontCode = reader.GetAttribute("Code")
+                            fontTitle = reader.GetAttribute("Title")
 
-                        xmlReader.MoveToAttribute("Title")
-                        fontTitle = xmlReader.Value
+                            '' if the id is already in the images dictionary, we want to overwrite with the
+                            '' data we have, since the further down the file, the newer the data
+                            '' but sometimes we don't get a full set of data, so we'll keep the old attributes
+                            '' that are already in the list
+                            If (images.ContainsKey(id)) Then
+                                '' we will always have an image, since we ignore anything without one
+                                images.Item(id).Item("image") = b64image
 
-                        '' create a dictionary of the values
-                        Dim itemDictionary As New Dictionary(Of String, String)
-                        itemDictionary.Add("fontCode", fontCode)
-                        itemDictionary.Add("fontTitle", fontTitle)
-                        itemDictionary.Add("image", image)
+                                '' if we have the other data, overwrite the old
+                                If Not (fontCode = "") Then images.Item(id).Item("fontCode") = fontCode
+                                If Not (fontTitle = "") Then images.Item(id).Item("fontTitle") = fontTitle
 
-                        ' '' if the id is already in the images dictionary, remove it so it can be replaced
-                        'If (images.ContainsKey(id)) Then images.Remove(id)
+                            Else
+                                '' otherwise we have no entries for this image, so create a new one
+                                Dim fontDictionary As New Dictionary(Of String, String)
+                                fontDictionary.Add("fontCode", fontCode)
+                                fontDictionary.Add("fontTitle", fontTitle)
+                                fontDictionary.Add("image", b64image)
+                                images.Add(id, fontDictionary)
+                            End If
 
-                        '' instead of removing existing entries in the images dictionary, we want to overwrite with
-                        '' any data we have, in case the newest copy doesn't have a title, code, etc (it will always
-                        '' have an image and id)
-                        If (images.ContainsKey(id)) Then
-                            '' we know we have an image, so overwrite the image for this id
-                            images.Item(id).Item("image") = itemDictionary.Item("image")
-
-                            '' if we have a font code, overwrite the font code for this id
-                            If Not (fontCode = "") Then images.Item(id).Item("fontCode") = itemDictionary.Item("fontCode")
-
-                            '' if we have a font title, overwrite the font title for this id
-                            If Not (fontTitle = "") Then images.Item(id).Item("fontTitle") = itemDictionary.Item("fontTitle")
-
-                        Else
-                            '' if this is the first of this id, then just add what we have to the dictionary
-                            images.Add(id, itemDictionary)
                         End If
+                    End While
+                    'reader.Dispose()
+                End Using
+                fs.Dispose()
+            End Using
 
+            '' return the latest images
+            Return images
 
-                    End If
-                End If
-            Loop
-
-        Catch ex As Exception When folderNum = ""
-            If Not (suppressErrors) Then
-                Throw New ApplicationException("PNGFontBridge:getCopyListFromFolderNumber - No folder number specified", ex)
-            End If
-        Catch ex As FileNotFoundException
-            If Not (suppressErrors) Then
-                Throw New ApplicationException("PNGFontBridge:getCopyListFromFolderNumber - Specified folder does not exist", ex)
-            End If
-
+        Catch e As Exception
+            Throw
         End Try
-
-        Return images
 
     End Function
 
-
+    '' give a base 64 string, get a bitmap object back
     Public Function getBitmapFromBase64(ByVal base64 As String) As Bitmap
         Try
             Dim ms As New MemoryStream(Convert.FromBase64String(base64))
@@ -139,6 +111,8 @@ Public Class PNGFontBridge
         End Try
     End Function
 
+    '' give a bitmap object (such as a PictureBox.Image) and save it as a PNG
+    '' to c:\eps\dump\clipboard.png - returns true or false, success or fail
     Public Function copyBitmapToClipboardPNG(ByVal bmp As Bitmap) As Boolean
         Try
             Dim clipboardPNG As String = "c:\eps\dump\clipboard.png"
@@ -148,6 +122,85 @@ Public Class PNGFontBridge
             Return False
         End Try
         Return True
+    End Function
+
+    '' give a bitmap object and save it as a PNG to the supplied base path and filename
+    Public Function saveBitmapToPng(ByVal bmp As Bitmap, ByVal basePath As String, ByVal filename As String, Optional ByVal overwrite As Boolean = True) As Boolean
+        Try
+            Dim fullPath As String = basePath & filename & ".png"
+            If (File.Exists(fullPath)) Then
+                If (overwrite) Then
+                    File.Delete(fullPath)
+                Else
+                    Return False
+                End If
+            End If
+            bmp.Save(fullPath, ImageFormat.Png)
+        Catch ex As Exception
+            Return False
+        End Try
+        Return True
+    End Function
+
+
+    '' returns the latest weekly image as a base64 string
+    Public Function getNewestWeeklyFromFolderNumber(Optional ByVal folderNum As String = "") As Dictionary(Of String, String)
+        Try
+            '' if no folderNum is passed, try to use the Folder() property
+            If (folderNum = "") Then folderNum = fnx
+
+            Dim weekly As New Dictionary(Of String, String)
+
+            Using fs As New FileStream(getFnxPathFromFolderNumber(folderNum), FileMode.Open, FileAccess.Read)
+                Using reader As XmlReader = XmlReader.Create(fs)
+                    While reader.Read
+                        '' we only want elements of type row with attribute image and a title or font
+                        '' code that identifies it as a weekly font
+                        If ((reader.NodeType = XmlNodeType.Element) AndAlso
+                            (reader.Name.ToUpper = "ROW") AndAlso
+                            (reader.HasAttributes) AndAlso
+                            Not (reader.GetAttribute("Image") = Nothing) AndAlso
+                            ((Not (reader.GetAttribute("Title") = Nothing) AndAlso
+                             (reader.GetAttribute("Title").ToUpper.Contains("WEEKLY"))) OrElse
+                             ((Not (reader.GetAttribute("Code") = Nothing) AndAlso
+                              (reader.GetAttribute("Code").Length > 1)) AndAlso
+                              ((reader.GetAttribute("Code").ToUpper.Substring(0, 2) = "WK") OrElse
+                              ((reader.GetAttribute("Code").ToUpper.Substring(0, 1) = "W") AndAlso
+                               (IsNumeric(reader.GetAttribute("Code").Substring(1, 1)))))))) Then
+
+                            weekly.Add("Id", reader.GetAttribute("Id"))
+                            weekly.Add("Code", reader.GetAttribute("Code"))
+                            weekly.Add("Title", reader.GetAttribute("Title"))
+                            weekly.Add("Image", reader.GetAttribute("Image"))
+                            weekly.Add("Position", reader.GetAttribute("Position"))
+
+                        End If
+
+                    End While
+                End Using
+                fs.Dispose()
+            End Using
+
+            '' return the latest image data
+            Return weekly
+
+        Catch e As Exception
+            Throw
+        End Try
+
+    End Function
+
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    '' PRIVATE METHODS '''''''''''''''''''''''''''''''''''''''''
+    ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    '' provide a folder number, get a file path
+    Private Function getFnxPathFromFolderNumber(Optional ByVal folderNum As String = "") As String
+        '' if no folder number is passed, try to use the Folder() property
+        If (folderNum = "") Then folderNum = fnx
+        '' we don't worry about error handling here - if we fail to provide a folderNum, we'll
+        '' end up generating a FileNotFoundException later on
+        Return PNGPath & folderNum & ".fnx"
     End Function
 
 End Class
